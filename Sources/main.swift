@@ -14,6 +14,8 @@ import AppKit
 
 // MARK: - Configuration
 
+let version = "1.0.0"
+
 struct Options {
     var dpi: CGFloat = 600
     var inPlace: Bool = true
@@ -21,6 +23,7 @@ struct Options {
     var languages: [String] = ["en-US"]
     var fast: Bool = false
     var skipExisting: Bool = true
+    var verbose: Bool = false
 }
 
 // MARK: - CLI Argument Parsing
@@ -60,6 +63,15 @@ func parseArguments() -> (Options, [String]) {
         case "--force":
             opt.skipExisting = false
             i += 1
+        case "--verbose", "-v":
+            opt.verbose = true
+            i += 1
+        case "--version":
+            print("pdf-ocr version \(version)")
+            exit(0)
+        case "--list-languages":
+            listSupportedLanguages()
+            exit(0)
         case "--help", "-h":
             printUsage()
             exit(0)
@@ -72,9 +84,23 @@ func parseArguments() -> (Options, [String]) {
     return (opt, inputs)
 }
 
+func listSupportedLanguages() {
+    print("Querying supported languages from Vision framework...")
+    do {
+        let request = VNRecognizeTextRequest()
+        let languages = try request.supportedRecognitionLanguages()
+        print("\nSupported Languages (\(languages.count) total):")
+        for lang in languages.sorted() {
+            print("  - \(lang)")
+        }
+    } catch {
+        print("Error querying languages: \(error)")
+    }
+}
+
 func printUsage() {
     print("""
-    PDF OCR - Apple Vision Framework
+    PDF OCR - Apple Vision Framework v\(version)
 
     Usage:
       pdf-ocr <file-or-folder> [options]
@@ -89,6 +115,9 @@ func printUsage() {
       --lang <codes>      Comma-separated language codes (default: en-US)
       --fast              Use fast recognition mode (less accurate)
       --force             Process PDFs even if they already have text
+      -v, --verbose       Show detailed processing information
+      --version           Show version information
+      --list-languages    List all supported OCR languages
       -h, --help          Show this help message
 
     Examples:
@@ -318,7 +347,10 @@ func sandwichPDF(input: URL, output: URL, opt: Options) throws {
     }
 
     let pages = doc.numberOfPages
+    var totalWords = 0
+
     for p in 1...pages {
+        let pageStart = Date()
         guard let page = doc.page(at: p) else { continue }
         let g = geom(for: page)
 
@@ -333,9 +365,12 @@ func sandwichPDF(input: URL, output: URL, opt: Options) throws {
         outCtx.restoreGState()
 
         // OCR and text layer
+        var pageWords = 0
         if let base = renderPageImage(page: page, geom: g, dpi: opt.dpi) {
             let ocrImg = opt.enhance ? (enhanceImage(base) ?? base) : base
             let words = try recognizeWords(on: ocrImg, languages: opt.languages, fast: opt.fast)
+            pageWords = words.count
+            totalWords += pageWords
 
             for (w, nbb) in words {
                 let r = normToPDF(nbb, pageRect: g.rect)
@@ -346,12 +381,19 @@ func sandwichPDF(input: URL, output: URL, opt: Options) throws {
 
         outCtx.endPage()
 
-        if pages > 5 && p % 5 == 0 {
+        let pageTime = Date().timeIntervalSince(pageStart)
+        if opt.verbose {
+            print("  Page \(p)/\(pages): \(pageWords) words, \(String(format: "%.2f", pageTime))s")
+        } else if pages > 5 && p % 5 == 0 {
             print("  \(p)/\(pages) pages...")
         }
     }
 
     outCtx.closePDF()
+
+    if opt.verbose {
+        print("  Total: \(totalWords) words recognized")
+    }
 }
 
 func atomicReplace(tmp: URL, dst: URL) throws {
@@ -388,9 +430,10 @@ if pdfs.isEmpty {
     exit(0)
 }
 
-print("PDF OCR - Apple Vision Framework")
+print("PDF OCR - Apple Vision Framework v\(version)")
 print("Found \(pdfs.count) PDF file(s)\n")
 
+let overallStart = Date()
 var processed = 0
 var skipped = 0
 var failed = 0
@@ -417,9 +460,11 @@ for (index, pdf) in pdfs.enumerated() {
     }
 
     do {
+        let fileStart = Date()
         try sandwichPDF(input: pdf, output: tmp, opt: opt)
         try atomicReplace(tmp: tmp, dst: out)
-        print("  ✓ \(out.path)\n")
+        let fileTime = Date().timeIntervalSince(fileStart)
+        print("  ✓ \(out.lastPathComponent) (\(String(format: "%.1f", fileTime))s)\n")
         processed += 1
     } catch {
         _ = try? fm.removeItem(at: tmp)
@@ -428,4 +473,6 @@ for (index, pdf) in pdfs.enumerated() {
     }
 }
 
+let totalTime = Date().timeIntervalSince(overallStart)
 print("Summary: \(processed) processed, \(skipped) skipped, \(failed) failed")
+print("Total time: \(String(format: "%.1f", totalTime))s")

@@ -1,0 +1,28 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Swift Package Manager
+.build/
+.swiftpm/
+*.xcodeproj
+Package.resolved
+
+# Build artifacts
+ocrpdf
+pdf-ocr
+*.dSYM.zip
+*.dSYM
+
+# Temporary files
+*.tmp
+*.tmp.*
+._*
+
+# OCR output
+*_ocr.pdf
+.*.tmp.*.pdf
+
+# External projects
+OCRmyPDF-AppleOCR/

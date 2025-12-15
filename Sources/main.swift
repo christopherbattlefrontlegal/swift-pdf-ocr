@@ -18,7 +18,6 @@ let version = "1.0.0"
 
 struct Options {
     var dpi: CGFloat = 600
-    var inPlace: Bool = true
     var enhance: Bool = true
     var languages: [String] = ["en-US"]
     var fast: Bool = false
@@ -46,9 +45,6 @@ func parseArguments() -> (Options, [String]) {
             i += 2
         case "--no-enhance":
             opt.enhance = false
-            i += 1
-        case "--no-in-place":
-            opt.inPlace = false
             i += 1
         case "--lang":
             guard i + 1 < argv.count else {
@@ -111,7 +107,6 @@ func printUsage() {
     Options:
       --dpi <value>       Resolution for OCR (default: 600)
       --no-enhance        Disable image enhancement
-      --no-in-place       Create separate _ocr.pdf files
       --lang <codes>      Comma-separated language codes (default: en-US)
       --fast              Use fast recognition mode (less accurate)
       --force             Process PDFs even if they already have text
@@ -120,11 +115,16 @@ func printUsage() {
       --list-languages    List all supported OCR languages
       -h, --help          Show this help message
 
+    Note:
+      Files are ALWAYS modified in-place with atomic replacement.
+      Original document dimensions are preserved exactly.
+      Temporary files are used during processing then deleted.
+
     Examples:
       pdf-ocr document.pdf
       pdf-ocr ~/Documents/Scans/ --dpi 300
       pdf-ocr file.pdf --lang en-US,es-ES --fast
-      pdf-ocr folder/ --no-enhance --no-in-place
+      pdf-ocr folder/ --no-enhance --verbose
     """)
 }
 
@@ -354,7 +354,15 @@ func sandwichPDF(input: URL, output: URL, opt: Options) throws {
         guard let page = doc.page(at: p) else { continue }
         let g = geom(for: page)
 
+        // Preserve EXACT original dimensions - no scaling or resizing
         var media = g.rect
+
+        if opt.verbose {
+            let width = media.width / 72.0
+            let height = media.height / 72.0
+            print("  Page \(p) dimensions: \(String(format: "%.2f", width))\" x \(String(format: "%.2f", height))\" (preserved)")
+        }
+
         outCtx.beginPage(mediaBox: &media)
 
         // Draw original page
@@ -448,23 +456,19 @@ for (index, pdf) in pdfs.enumerated() {
         continue
     }
 
+    // Always use in-place replacement with atomic file operation
     let dir = pdf.deletingLastPathComponent()
     let tmp = dir.appendingPathComponent(".\(pdf.lastPathComponent).tmp.\(UUID().uuidString).pdf")
-    let out: URL
-
-    if opt.inPlace {
-        out = pdf
-    } else {
-        let base = pdf.deletingPathExtension().lastPathComponent
-        out = dir.appendingPathComponent(base + "_ocr.pdf")
-    }
 
     do {
         let fileStart = Date()
         try sandwichPDF(input: pdf, output: tmp, opt: opt)
-        try atomicReplace(tmp: tmp, dst: out)
+
+        // Atomic replacement: tmp -> original (same file, same location)
+        try atomicReplace(tmp: tmp, dst: pdf)
+
         let fileTime = Date().timeIntervalSince(fileStart)
-        print("  ✓ \(out.lastPathComponent) (\(String(format: "%.1f", fileTime))s)\n")
+        print("  ✓ \(pdf.lastPathComponent) (in-place, \(String(format: "%.1f", fileTime))s)\n")
         processed += 1
     } catch {
         _ = try? fm.removeItem(at: tmp)

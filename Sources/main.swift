@@ -11,18 +11,21 @@ import CoreText
 import CoreImage
 import ImageIO
 import AppKit
+import Quartz
+import PDFKit
 
 // MARK: - Configuration
 
 let version = "1.0.0"
 
 struct Options {
-    var dpi: CGFloat = 600
+    var dpi: CGFloat = 1200  // Increased from 600 - blow it up HUGE for better OCR
     var enhance: Bool = true
     var languages: [String] = ["en-US"]
     var fast: Bool = false
     var skipExisting: Bool = true
     var verbose: Bool = false
+    var flatten: Bool = false  // Disable flattening - it may destroy OCR-able content
 }
 
 // MARK: - CLI Argument Parsing
@@ -199,6 +202,28 @@ func geom(for page: CGPDFPage) -> PageGeom {
 
 // MARK: - Image Rendering
 
+func renderPageImageUsingPDFKit(pdfURL: URL, pageNum: Int, dpi: CGFloat) -> CGImage? {
+    // Use PDFKit like Preview does - this works way better!
+    guard let pdfDoc = PDFDocument(url: pdfURL),
+          let page = pdfDoc.page(at: pageNum) else {
+        return nil
+    }
+
+    let bounds = page.bounds(for: .mediaBox)
+    let scale = dpi / 72.0
+    let size = CGSize(width: bounds.width * scale, height: bounds.height * scale)
+
+    // PDFPage.thumbnail() renders correctly for OCR (what Preview uses)
+    let nsImage = page.thumbnail(of: size, for: .mediaBox)
+
+    // Convert NSImage to CGImage
+    guard let cgImage = nsImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+        return nil
+    }
+
+    return cgImage
+}
+
 func renderPageImage(page: CGPDFPage, geom: PageGeom, dpi: CGFloat) -> CGImage? {
     let scale = dpi / 72.0
     let pxW = max(1, Int((geom.rect.width * scale).rounded(.up)))
@@ -232,12 +257,12 @@ func enhanceImage(_ cg: CGImage) -> CGImage? {
     let input = CIImage(cgImage: cg)
     let ciCtx = CIContext(options: nil)
 
-    // Convert to grayscale and increase contrast
+    // AGGRESSIVE enhancement - convert to grayscale and REALLY increase contrast
     guard let color = CIFilter(name: "CIColorControls") else { return cg }
     color.setValue(input, forKey: kCIInputImageKey)
     color.setValue(0.0, forKey: kCIInputSaturationKey)
-    color.setValue(1.25, forKey: kCIInputContrastKey)
-    color.setValue(0.02, forKey: kCIInputBrightnessKey)
+    color.setValue(2.0, forKey: kCIInputContrastKey)  // Increased from 1.25 to 2.0
+    color.setValue(0.1, forKey: kCIInputBrightnessKey)  // Increased from 0.02 to 0.1
     let out1 = (color.outputImage ?? input)
 
     // Reduce noise
@@ -336,6 +361,50 @@ func drawInvisibleWord(_ ctx: CGContext, word: String, rect: CGRect) {
     ctx.restoreGState()
 }
 
+// MARK: - PDF Flattening
+
+func flattenPDF(input: URL, output: URL, opt: Options) throws {
+    guard let doc = CGPDFDocument(input as CFURL) else {
+        throw OCRError.cannotOpenPDF(input.path)
+    }
+    guard let outCtx = CGContext(output as CFURL, mediaBox: nil, nil) else {
+        throw OCRError.cannotSavePDF(output.path)
+    }
+
+    let pages = doc.numberOfPages
+    if opt.verbose {
+        print("  Flattening PDF: removing form fields, annotations, and layers...")
+    }
+
+    for p in 1...pages {
+        guard let page = doc.page(at: p) else { continue }
+        let g = geom(for: page)
+
+        // Preserve exact dimensions
+        var media = g.rect
+        outCtx.beginPage(mediaBox: &media)
+
+        // Render page as high-res image to flatten everything
+        // Use same DPI as OCR will use for best quality
+        if let flatImage = renderPageImage(page: page, geom: g, dpi: opt.dpi) {
+            // Draw the flattened image at original size
+            outCtx.draw(flatImage, in: media)
+        }
+
+        outCtx.endPage()
+
+        if opt.verbose && pages > 5 && p % 5 == 0 {
+            print("  Flattened \(p)/\(pages) pages...")
+        }
+    }
+
+    outCtx.closePDF()
+
+    if opt.verbose {
+        print("  ✓ Flattening complete")
+    }
+}
+
 // MARK: - Sandwich PDF Creation
 
 func sandwichPDF(input: URL, output: URL, opt: Options) throws {
@@ -372,9 +441,9 @@ func sandwichPDF(input: URL, output: URL, opt: Options) throws {
         outCtx.drawPDFPage(page)
         outCtx.restoreGState()
 
-        // OCR and text layer
+        // OCR and text layer - use PDFKit rendering like Preview!
         var pageWords = 0
-        if let base = renderPageImage(page: page, geom: g, dpi: opt.dpi) {
+        if let base = renderPageImageUsingPDFKit(pdfURL: input, pageNum: p - 1, dpi: opt.dpi) {
             let ocrImg = opt.enhance ? (enhanceImage(base) ?? base) : base
             let words = try recognizeWords(on: ocrImg, languages: opt.languages, fast: opt.fast)
             pageWords = words.count
@@ -405,8 +474,28 @@ func sandwichPDF(input: URL, output: URL, opt: Options) throws {
 }
 
 func atomicReplace(tmp: URL, dst: URL) throws {
-    if fm.fileExists(atPath: dst.path) { try fm.removeItem(at: dst) }
-    try fm.moveItem(at: tmp, to: dst)
+    // Better atomic replacement - don't remove until we're sure we can move
+    let backup = dst.deletingLastPathComponent().appendingPathComponent(".\(dst.lastPathComponent).backup")
+
+    // Step 1: Move original to backup (if it exists)
+    if fm.fileExists(atPath: dst.path) {
+        // Remove any old backup first
+        try? fm.removeItem(at: backup)
+        try fm.moveItem(at: dst, to: backup)
+    }
+
+    // Step 2: Move temp to final destination
+    do {
+        try fm.moveItem(at: tmp, to: dst)
+        // Success! Remove backup
+        try? fm.removeItem(at: backup)
+    } catch {
+        // Failed! Restore backup
+        if fm.fileExists(atPath: backup.path) {
+            try? fm.moveItem(at: backup, to: dst)
+        }
+        throw error
+    }
 }
 
 // MARK: - Error Types
@@ -459,10 +548,24 @@ for (index, pdf) in pdfs.enumerated() {
     // Always use in-place replacement with atomic file operation
     let dir = pdf.deletingLastPathComponent()
     let tmp = dir.appendingPathComponent(".\(pdf.lastPathComponent).tmp.\(UUID().uuidString).pdf")
+    let flattened = dir.appendingPathComponent(".\(pdf.lastPathComponent).flat.\(UUID().uuidString).pdf")
 
     do {
         let fileStart = Date()
-        try sandwichPDF(input: pdf, output: tmp, opt: opt)
+
+        // Step 1: Flatten PDF first (removes form fields, annotations, layers)
+        if opt.flatten {
+            try flattenPDF(input: pdf, output: flattened, opt: opt)
+
+            // Step 2: OCR the flattened version
+            try sandwichPDF(input: flattened, output: tmp, opt: opt)
+
+            // Clean up flattened intermediate file
+            try? fm.removeItem(at: flattened)
+        } else {
+            // Direct OCR without flattening
+            try sandwichPDF(input: pdf, output: tmp, opt: opt)
+        }
 
         // Atomic replacement: tmp -> original (same file, same location)
         try atomicReplace(tmp: tmp, dst: pdf)
@@ -472,6 +575,7 @@ for (index, pdf) in pdfs.enumerated() {
         processed += 1
     } catch {
         _ = try? fm.removeItem(at: tmp)
+        _ = try? fm.removeItem(at: flattened)
         fputs("  ✗ Error: \(error.localizedDescription)\n\n", stderr)
         failed += 1
     }

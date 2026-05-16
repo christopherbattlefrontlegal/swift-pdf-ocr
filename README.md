@@ -6,13 +6,15 @@ A high-performance command-line tool for macOS that adds searchable text layers 
 
 - **Native Apple Vision OCR** - Leverages Apple's state-of-the-art Vision framework for accurate text recognition
 - **Sandwich PDF Creation** - Preserves original PDF appearance while adding searchable text
-- **Word-Level Positioning** - Precisely positions text at word boundaries for accurate search results
+- **Word-Level Positioning** - Precisely positions text at word boundaries for pixel-accurate highlight selection
+- **Exact Dimension Preservation** - Maintains original document size (8.5x11, A4, etc.) with zero scaling
+- **In-Place Replacement** - Always overwrites original files atomically (no separate output files)
 - **Image Enhancement** - Optional preprocessing with contrast, brightness, and sharpness adjustments
 - **Multi-Language Support** - Supports all languages available in Apple's Vision framework
 - **Fast & Accurate Modes** - Choose between speed and accuracy based on your needs
 - **Batch Processing** - Process individual files or entire folders recursively
 - **Smart Skip Detection** - Automatically skips PDFs that already have text
-- **Atomic Operations** - Safe in-place replacement with temporary file protection
+- **Atomic Operations** - Safe file replacement using temporary files, then deletion after success
 
 ## Requirements
 
@@ -52,68 +54,69 @@ chmod +x ocrpdf.swift
 ### Basic Usage
 
 ```bash
-# Process a single PDF (in-place replacement)
+# Process a single PDF (overwrites original file)
 pdf-ocr document.pdf
 
-# Process a folder of PDFs
+# Process a folder of PDFs (all files overwritten in-place)
 pdf-ocr ~/Documents/Scans/
 ```
 
-### Advanced Options (ocrpdf.swift)
+### Advanced Options
 
 ```bash
 # Custom DPI for better accuracy (default: 600)
-./ocrpdf.swift file.pdf --dpi 300
+pdf-ocr file.pdf --dpi 300
 
 # Disable image enhancement (faster, less accurate)
-./ocrpdf.swift file.pdf --no-enhance
+pdf-ocr file.pdf --no-enhance
 
 # Fast mode (speed over accuracy)
-./ocrpdf.swift file.pdf --fast
+pdf-ocr file.pdf --fast
 
 # Multiple languages
-./ocrpdf.swift file.pdf --lang en-US,es-ES,fr-FR
+pdf-ocr file.pdf --lang en-US,es-ES,fr-FR
 
-# Create separate output file instead of in-place
-./ocrpdf.swift file.pdf --no-in-place
+# Verbose output with per-page timing and dimensions
+pdf-ocr file.pdf --verbose
+
+# Check version
+pdf-ocr --version
+
+# List all supported languages
+pdf-ocr --list-languages
 
 # Process multiple files/folders
-./ocrpdf.swift *.pdf ~/Downloads/ --dpi 300 --lang en-US
+pdf-ocr *.pdf ~/Downloads/ --dpi 300 --lang en-US
 ```
+
+**IMPORTANT:** All files are modified **in-place** with atomic replacement. The original file is overwritten after successful OCR processing. A temporary file is created during processing, then replaces the original upon success.
 
 ## How It Works
 
 1. **Page Rendering** - Each PDF page is rendered to a high-resolution image (default 600 DPI)
-2. **Image Enhancement** (optional) - Applies Core Image filters to improve text clarity:
+2. **Dimension Preservation** - Original page dimensions are captured and maintained exactly (no scaling)
+3. **Image Enhancement** (optional) - Applies Core Image filters to improve text clarity:
    - Desaturation to grayscale
    - Contrast enhancement
    - Noise reduction
    - Unsharp mask for edge definition
-3. **OCR Processing** - Apple Vision framework recognizes text with word-level bounding boxes
-4. **Text Layer Creation** - Invisible text is positioned precisely over recognized words
-5. **PDF Generation** - Original page is drawn with the invisible text layer on top
-6. **Atomic Replacement** - Safe file replacement using temporary files
+4. **OCR Processing** - Apple Vision framework recognizes text with word-level bounding boxes
+5. **Text Layer Creation** - Invisible text is positioned precisely over recognized words at pixel-accurate coordinates
+6. **PDF Generation** - Original page is drawn with the invisible text layer on top using exact original dimensions
+7. **Atomic Replacement** - Temporary file replaces original file safely, then temp file is deleted
 
-## Comparison: Two Implementations
+## Implementation Details
 
-This repository contains two implementations:
+The tool uses a unified, optimized implementation (`Sources/main.swift`) that combines:
 
-### `ocrpdf.swift` - Advanced CLI Tool
-- Full command-line argument parsing
-- Image enhancement filters
-- Word-level text tokenization for precise positioning
-- Configurable DPI, languages, and processing modes
-- Atomic file replacement
-- Direct use of CGPDFDocument and CGContext
+- **Word-level tokenization** for pixel-accurate text positioning
+- **Image enhancement filters** for better OCR accuracy
+- **Atomic file operations** for safe in-place replacement
+- **Dimension preservation** to maintain exact document sizes
+- **Smart text detection** to skip already-processed PDFs
+- **Performance tracking** with verbose mode for optimization
 
-### `Sources/main.swift` - Swift Package Version
-- Simpler, cleaner architecture
-- Uses PDFKit for easier PDF handling
-- Automatic detection of existing text
-- Progress reporting for multi-page documents
-- Better structured for library use
-
-Both create proper sandwich PDFs with excellent search accuracy.
+The `ocrpdf.swift` file is a legacy standalone script. The recommended approach is to build with Swift Package Manager for the full-featured version.
 
 ## Performance
 
